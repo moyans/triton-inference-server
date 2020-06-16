@@ -250,9 +250,7 @@ TRITONBACKEND_EXPORT TRITONSERVER_Error* TRITONBACKEND_RequestRelease(
 /// Object representing an inference response factory.
 ///
 
-/// Create the response factory associated with a request. This
-/// function can be called only once for a given request. Subsequent
-/// calls with result in a TRITONSERVER_ERROR_ALREADY_EXISTS error.
+/// Create the response factory associated with a request.
 ///
 /// \param factory Returns the new response factory.
 /// \param request The inference request.

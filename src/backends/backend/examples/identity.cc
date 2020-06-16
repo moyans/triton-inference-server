@@ -52,6 +52,19 @@ namespace ni = nvidia::inferenceserver;
 
 namespace {
 
+#define LOG_IF_ERROR(X, MSG)                                               \
+  do {                                                                     \
+    TRITONSERVER_Error* err__ = (X);                                       \
+    if (err__ != nullptr) {                                                \
+      TRITONSERVER_LogMessage(                                             \
+          TRITONSERVER_LOG_INFO, __FILE__, __LINE__,                       \
+          (std::string(MSG) + ": " + TRITONSERVER_ErrorCodeString(err__) + \
+           " - " + TRITONSERVER_ErrorMessage(err__))                       \
+              .c_str());                                                   \
+      TRITONSERVER_ErrorDelete(err__);                                     \
+    }                                                                      \
+  } while (false)
+
 #define RETURN_ERROR_IF_FALSE(P, C, MSG)              \
   do {                                                \
     if (!(P)) {                                       \
@@ -67,17 +80,16 @@ namespace {
     }                                \
   } while (false)
 
-#define LOG_IF_ERROR(X, MSG)                                               \
-  do {                                                                     \
-    TRITONSERVER_Error* err__ = (X);                                       \
-    if (err__ != nullptr) {                                                \
-      TRITONSERVER_LogMessage(                                             \
-          TRITONSERVER_LOG_INFO, __FILE__, __LINE__,                       \
-          (std::string(MSG) + ": " + TRITONSERVER_ErrorCodeString(err__) + \
-           " - " + TRITONSERVER_ErrorMessage(err__))                       \
-              .c_str());                                                   \
-      TRITONSERVER_ErrorDelete(err__);                                     \
-    }                                                                      \
+#define RESPOND_IF_ERROR(RESPONSES, IDX, X)                         \
+  do {                                                              \
+    TRITONSERVER_Error* err__ = (X);                                \
+    if (err__ != nullptr) {                                         \
+      LOG_IF_ERROR(                                                 \
+          TRITONBACKEND_ResponseSendError((RESPONSES)[IDX], err__), \
+          "failed to send error response");                         \
+      (RESPONSES)[IDX] = nullptr;                                   \
+      TRITONSERVER_ErrorDelete(err__);                              \
+    }                                                               \
   } while (false)
 
 TRITONSERVER_Error*
@@ -388,6 +400,70 @@ TRITONBACKEND_ModelExecute(
       (std::string("TRITONBACKEND_ModelExecute: ") +
        std::to_string(request_count) + " requests")
           .c_str());
+
+  // Triton only calls model execute from a single thread at a time,
+  // so we can use a static vector to hold the response objects to
+  // avoid malloc on every execute. 'responses' is initialized with
+  // the response objects below and if/when an error response is sent
+  // the corresponding entry in 'responses' is set to nullptr to
+  // indicate that that response has already been sent.
+  static std::vector<TRITONBACKEND_Response*> responses(128);
+  responses.clear();
+
+  // Create a single response object for each request. If something
+  // goes wrong when attempting to create the response objects just
+  // fail all of the requests by returning an error.
+  for (uint32_t r = 0; r < request_count; ++r) {
+    TRITONBACKEND_Request* request = requests[r];
+
+    TRITONBACKEND_ResponseFactory* response_factory;
+    RETURN_IF_ERROR(
+        TRITONBACKEND_ResponseFactoryNew(&response_factory, request));
+
+    TRITONBACKEND_Response* response;
+    RETURN_IF_ERROR(TRITONBACKEND_ResponseNew(&response, response_factory));
+    RETURN_IF_ERROR(TRITONBACKEND_ResponseFactoryDelete(response_factory));
+
+    responses.push_back(response);
+  }
+
+  // At this point we accept ownership of 'requests', which means that
+  // even if something goes wrong we must still return success. If
+  // something does go wrong in processing a particular request then
+  // we send an error response just for the specific request.
+
+  // We just process each request separately... in general a backend
+  // should try to operate on the entire batch of requests at the same
+  // time for improved performance.
+  for (uint32_t r = 0; r < request_count; ++r) {
+    TRITONBACKEND_Request* request = requests[r];
+
+    const char* request_id;
+    RESPOND_IF_ERROR(
+        responses, r, TRITONBACKEND_RequestId(request, &request_id));
+
+    uint64_t correlation_id;
+    RESPOND_IF_ERROR(
+        responses, r, TRITONBACKEND_RequestCorrelationId(request, &correlation_id));
+
+    // Triton ensures that there is only a single input since that is
+    // what is specified in the model configuration, so normally there
+    // would be no reason to check it but we do here to demonstate the
+    // API.
+    uint32_t input_count;
+    RESPOND_IF_ERROR(
+        responses, r, TRITONBACKEND_RequestInputCount(request, &input_count));
+    TRITONSERVER_LogMessage(
+        TRITONSERVER_LOG_INFO, __FILE__, __LINE__,
+        (std::string("request ") + std::to_string(r) + ": id = \"" + request_id +
+         "\", correlation id = " + std::to_string(correlation_id) +
+         ", input count: " + std::to_string(input_count))
+            .c_str());
+
+    // TRITONBACKEND_Input* input;
+    // RESPOND_IF_ERROR(responses, r, TRITONBACKEND_RequestInput(request, 0 /*
+    // index*/, &input));
+  }
 
   return nullptr;  // success
 }

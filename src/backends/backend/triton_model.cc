@@ -169,6 +169,9 @@ TritonModel::~TritonModel()
 
 extern "C" {
 
+//
+// TRITONBACKEND_Model
+//
 TRITONSERVER_Error*
 TRITONBACKEND_ModelName(TRITONBACKEND_Model* model, const char** name)
 {
@@ -234,6 +237,128 @@ TRITONBACKEND_ModelSetState(TRITONBACKEND_Model* model, void* state)
 {
   TritonModel* tm = reinterpret_cast<TritonModel*>(model);
   tm->SetState(state);
+  return nullptr;  // success
+}
+
+//
+// TRITONBACKEND_ResponseFactory
+//
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseFactoryNew(
+    TRITONBACKEND_ResponseFactory** factory, TRITONBACKEND_Request* request)
+{
+  InferenceRequest* tr = reinterpret_cast<InferenceRequest*>(request);
+  InferenceResponseFactory* response_factory =
+      new InferenceResponseFactory(tr->ResponseFactory());
+  *factory = reinterpret_cast<TRITONBACKEND_ResponseFactory*>(response_factory);
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseFactoryDelete(TRITONBACKEND_ResponseFactory* factory)
+{
+  InferenceResponseFactory* tf =
+      reinterpret_cast<InferenceResponseFactory*>(factory);
+  delete tf;
+  return nullptr;  // success
+}
+
+///
+/// TRITONBACKEND_Response
+///
+TRITONSERVER_Error*
+TRITONBACKEND_RequestId(TRITONBACKEND_Request* request, const char** id)
+{
+  InferenceRequest* tr = reinterpret_cast<InferenceRequest*>(request);
+  *id = tr->Id().c_str();
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_RequestCorrelationId(TRITONBACKEND_Request* request, uint64_t* id)
+{
+  InferenceRequest* tr = reinterpret_cast<InferenceRequest*>(request);
+  *id = tr->CorrelationId();
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_RequestBatchSize(
+    TRITONBACKEND_Request* request, uint32_t* batch_size)
+{
+  InferenceRequest* tr = reinterpret_cast<InferenceRequest*>(request);
+  *batch_size = tr->BatchSize();
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_RequestInputCount(TRITONBACKEND_Request* request, uint32_t* count)
+{
+  InferenceRequest* tr = reinterpret_cast<InferenceRequest*>(request);
+  *count = tr->ImmutableInputs().size();
+  return nullptr;  // success
+}
+
+///
+/// TRITONBACKEND_Response
+///
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseNew(
+    TRITONBACKEND_Response** response, TRITONBACKEND_ResponseFactory* factory)
+{
+  InferenceResponseFactory* tf =
+      reinterpret_cast<InferenceResponseFactory*>(factory);
+
+  std::unique_ptr<InferenceResponse> tr;
+  Status status = tf->CreateResponse(&tr);
+  if (!status.IsOk()) {
+    *response = nullptr;
+    return TRITONSERVER_ErrorNew(
+        StatusCodeToTritonCode(status.StatusCode()), status.Message().c_str());
+  }
+
+  *response = reinterpret_cast<TRITONBACKEND_Response*>(tr.release());
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseDelete(TRITONBACKEND_Response* response)
+{
+  InferenceResponse* tr = reinterpret_cast<InferenceResponse*>(response);
+  delete tr;
+  return nullptr;  // success
+}
+
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseSend(TRITONBACKEND_Response* response)
+{
+  InferenceResponse* tr = reinterpret_cast<InferenceResponse*>(response);
+
+  std::unique_ptr<InferenceResponse> utr(tr);
+  Status status = InferenceResponse::Send(std::move(utr));
+  if (!status.IsOk()) {
+    return TRITONSERVER_ErrorNew(
+        StatusCodeToTritonCode(status.StatusCode()), status.Message().c_str());
+  }
+  return nullptr;  // success
+}
+
+
+TRITONSERVER_Error*
+TRITONBACKEND_ResponseSendError(
+    TRITONBACKEND_Response* response, TRITONSERVER_Error* error)
+{
+  InferenceResponse* tr = reinterpret_cast<InferenceResponse*>(response);
+
+  std::unique_ptr<InferenceResponse> utr(tr);
+  Status status = InferenceResponse::SendWithStatus(
+      std::move(utr), Status(
+                          TritonCodeToStatusCode(TRITONSERVER_ErrorCode(error)),
+                          TRITONSERVER_ErrorMessage(error)));
+  if (!status.IsOk()) {
+    return TRITONSERVER_ErrorNew(
+        StatusCodeToTritonCode(status.StatusCode()), status.Message().c_str());
+  }
   return nullptr;  // success
 }
 
